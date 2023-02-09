@@ -30,7 +30,8 @@ class State:
     
     """
     def __init__(self, x=0.0, y=0.0, yaw=0.0, currentSpeed=0.0):
-        self.state_sub = rospy.Subscriber("/odometry/trajectory" , Path , self.update) 
+        
+        self.state_sub = rospy.Subscriber("/odometry_node/trajectory" , Path , self.update) 
         self.x = x
         self.y = y
         self.yaw = yaw
@@ -38,18 +39,23 @@ class State:
         self.rear_x = self.x - ((BaseWidth / 2) * math.cos(self.yaw))
         self.rear_y = self.y - ((BaseWidth / 2) * math.sin(self.yaw))
         
-    def update(self, acc:float, delta:float) -> None:
+    def update(self, data:Path) -> None:
         """
         
         update the state of the vehicle
         
         """
-        self.x += self.currentSpeed * math.cos(self.yaw) * dt
-        self.y += self.currentSpeed * math.sin(self.yaw) * dt
+        global delta
+        global state_old
+        self.x = data.poses[-1].pose.position.x
+        self.y = data.poses[-1].pose.position.y
+        self.currentSpeed = ((self.x - state_old[0])**2 + (self.y - state_old[1])**2)/ dt 
         self.yaw += self.currentSpeed / BaseWidth * math.tan(delta) * dt   
-        self.currentSpeed += acc * dt  
+        
         self.rear_x = self.x - ((BaseWidth / 2) * math.cos(self.yaw))
         self.rear_y = self.y - ((BaseWidth / 2) * math.sin(self.yaw))
+        state_old = [self.x,self.y]
+        print(self.x, self.y)
         return None
     def calcDistance(self, point_x:float, point_y:float) -> float:
         """
@@ -149,6 +155,7 @@ class WayPoints:
         return ind, Lookahead # return the index of the target point and the look ahead distance
         
 def pure_pursuit_steer_control(state:State, trajectory:WayPoints, pind):
+    global delta
     ind, Lf = trajectory.search_target_index(state)
     tx = ty = 0
     if pind >= ind:
@@ -174,10 +181,13 @@ def proportional_control(targetSpeed, currentSpeed):  #longitudinal controller
     return acc
     
 def main():
-    X_coordinates = [0.0]
-    Y_coordinates = [0.0]
+    X_coordinates = []
+    Y_coordinates = []
     Z_coordinates = [0.0]
     
+    data = rospy.wait_for_message("/waypoints", Path)
+    X_coordinates = data.poses[0].pose.position.x
+    Y_coordinates = data.poses[0].pose.position.y
     rospy.init_node ('purepursuit_controller', anonymous=True)
     # pose = Pose()
     # X_coordinate = pose.position.x #np.arange(0, 100, 0.5)
@@ -207,7 +217,7 @@ def main():
         odom = Odometry()
         acc = proportional_control(target_speed, state.currentSpeed)  #longitudinal controller
         di, target_ind = pure_pursuit_steer_control(state, target_course, target_ind) #lateral controller
-        state.update(acc, di)   #update the state of the car
+        # state.update(acc, di)   #update the state of the car
         odom.twist.twist.linear.x = target_speed #target
         odom.twist.twist.linear.y = state.currentSpeed 
         odom.twist.twist.linear.z = di  #steering angle
@@ -225,6 +235,7 @@ def main():
          #, target_speed,"time:", round(time,2), "clearance:", round(clearance,2))
         
         states.update(time, state)        
+
         if show_animation:  
             plt.cla()
             # for stopping simulation with the esc key.
@@ -233,7 +244,7 @@ def main():
                 lambda event: [exit(0) if event.key == 'escape' else None])
             
             plt.plot(X_coordinates, Y_coordinates, "-r", label="course")
-            plt.plot(states.x, states.y, "-b", label="trajectory")
+            plt.plot(states.x, states.y,"-b",ms=30,  label="trajectory")
             plt.plot(X_coordinates[target_ind], Y_coordinates[target_ind], "xg", label="target")
             plt.axis("equal")
             plt.grid(True)
@@ -258,6 +269,7 @@ def main():
         plt.cla()
         plt.plot(X_coordinates, Y_coordinates, ".r", label="course")
         plt.plot(states.x, states.y, "-b", label="trajectory")
+        
         plt.legend()
         plt.xlabel("x[m]")
         plt.ylabel("y[m]")
@@ -273,6 +285,9 @@ def main():
     
 
 if __name__ == '__main__':
+    data = rospy.wait_for_message("/odometry_node/trajectory", Path)
+    state_old = [data.poses[-1].pose.position.x,data.poses[-1].pose.position.y]
+    delta = 0
     main()
     
   
