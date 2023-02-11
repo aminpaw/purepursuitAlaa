@@ -59,9 +59,11 @@ ros::Subscriber Bridge_sub_velocity;
   Bridge_sub_control = n.subscribe("sub_control_actions", 1000, Bridge_CB);
   //Bridge_sub_velocity = n.subscribe("/IMU", 1000, Bridge_Callback_state_estimation);
   ros::Rate loop_rate(10);
+  Control_msg.use_vc = 1;
+  Bridge_pub.publish(Control_msg);
   while (ros::ok())
   { 
-  Control_msg.use_vc = 1;
+
   PIDController_Update(&pid, velocity_setpoint, current_velocity);
     if (pid.out > 0)
     {

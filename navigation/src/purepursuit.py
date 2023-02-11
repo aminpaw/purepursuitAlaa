@@ -7,6 +7,8 @@ from nav_msgs.msg import Path, Odometry
 from std_msgs.msg import Float64MultiArray
 import matplotlib.pyplot as plt
 from ackermann_msgs.msg import AckermannDriveStamped
+from tf.transformations import euler_from_quaternion
+import time
 
 #parameters
 gainLH = 0.5 #rospy.get_param("/gains/look_forward")   # look forward gain 
@@ -14,6 +16,7 @@ LOOKAHEADCONSTANT = 2 #rospy.get_param("/look_ahead_constant") # look ahead cons
 Kp =  1.0 #rospy.get_param("/gains/propotional") # propotional gain
 Kd = 0.1 #rospy.get_param("/gains/differential") # differential gain
 dt = 0.1 #rospy.get_param("/time_step") # [s] time step 
+
 BaseWidth = 2.9 #rospy.get_param("/base_width") # [m] car length
 show_animation = True
 publishing = True
@@ -29,27 +32,37 @@ class State:
     state of the vehicle gotten from SLAM
     
     """
-    def __init__(self, x=0.0, y=0.0, yaw=0.0, currentSpeed=0.0):
-        self.state_sub = rospy.Subscriber("/odometry/trajectory" , Path , self.update) 
+    def __init__(self, x, y, yaw=0.0, currentSpeed=0.0):
+        
+        self.state_sub = rospy.Subscriber("/odometry_node/trajectory" , Path , self.update) 
         self.x = x
         self.y = y
         self.yaw = yaw
         self.currentSpeed = currentSpeed
         self.rear_x = self.x - ((BaseWidth / 2) * math.cos(self.yaw))
         self.rear_y = self.y - ((BaseWidth / 2) * math.sin(self.yaw))
+        self.time = time.time()
         
-    def update(self, acc:float, delta:float) -> None:
+    def update(self, data:Path) -> None:
         """
         
         update the state of the vehicle
         
         """
-        self.x += self.currentSpeed * math.cos(self.yaw) * dt
-        self.y += self.currentSpeed * math.sin(self.yaw) * dt
-        self.yaw += self.currentSpeed / BaseWidth * math.tan(delta) * dt   
-        self.currentSpeed += acc * dt  
+        global states,delta
+        currentTime = time.time()
+        self.x = data.poses[-1].pose.position.x
+        self.y = data.poses[-1].pose.position.y
+        self.currentSpeed = ((self.x - states.x[-1])**2 + (self.y - states.y[-1])**2)/ (currentTime-self.time)
+        #self.yaw += self.currentSpeed / BaseWidth * math.tan(delta) * dt   
+        quat_msg = data.poses[-1].pose.orientation
+        quat_list = [quat_msg.x,quat_msg.y,quat_msg.z,quat_msg.w]
+        (_, _, self.yaw) = euler_from_quaternion(quat_list)
         self.rear_x = self.x - ((BaseWidth / 2) * math.cos(self.yaw))
         self.rear_y = self.y - ((BaseWidth / 2) * math.sin(self.yaw))
+        self.time = currentTime
+        rospy.loginfo(self.x)
+        rospy.loginfo(self.y)
         return None
     def calcDistance(self, point_x:float, point_y:float) -> float:
         """
@@ -77,8 +90,6 @@ class States:
         self.currentSpeed.append(state.currentSpeed)
         self.time.append(time)
         
-
-
 class WayPoints: 
     """
     
@@ -98,12 +109,14 @@ class WayPoints:
         """
         used to update the waypoints
         """
-        self.pose = data
-        if (len(data.poses) % 20 == 0):
-            #self.pose.poses[-1].pose.position.y = self.pose.poses[-1].pose.position.y
-            #self.pose.poses[-1].pose.position.x = self.pose.poses[-1].pose.position.x
-            self.X_coordinates.append(self.pose.poses[-1].pose.position.x)
-            self.Y_coordinates.append(self.pose.poses[-1].pose.position.y)
+        self.pose = data        
+        #self.pose.poses[-1].pose.position.y = self.pose.poses[-1].pose.position.y
+        #self.pose.poses[-1].pose.position.x = self.pose.poses[-1].pose.position.x
+        for i in range(len(data.poses)):
+            if (i > len(self.X_coordinates)*10):
+                if (i % 10 == 0):
+                    self.X_coordinates.append(self.pose.poses[i].pose.position.x)
+                    self.Y_coordinates.append(self.pose.poses[i].pose.position.y)
             
         
 
@@ -149,6 +162,7 @@ class WayPoints:
         return ind, Lookahead # return the index of the target point and the look ahead distance
         
 def pure_pursuit_steer_control(state:State, trajectory:WayPoints, pind):
+    global delta
     ind, Lf = trajectory.search_target_index(state)
     tx = ty = 0
     if pind >= ind:
@@ -167,35 +181,29 @@ def pure_pursuit_steer_control(state:State, trajectory:WayPoints, pind):
     delta = math.atan2(2.0 * BaseWidth * math.sin(alpha) / Lf, 1.0)
 
     return delta, ind
-
-def proportional_control(targetSpeed, currentSpeed):  #longitudinal controller
-    
-    acc = Kp*(targetSpeed - currentSpeed) + Kd*((targetSpeed-currentSpeed)/dt )
-    return acc
     
 def main():
+    global states
     X_coordinates = [0.0]
     Y_coordinates = [0.0]
     Z_coordinates = [0.0]
-    
     rospy.init_node ('purepursuit_controller', anonymous=True)
     # pose = Pose()
     # X_coordinate = pose.position.x #np.arange(0, 100, 0.5)
-    # Y_coordinate = pose.position.y  #[math.sin(ix / 5.0) * ix / 2.0 for ix in X_coordinates]
+    # Y_coordinate = pose.position.y #[math.sin(ix / 5.0) * ix / 2.0 for ix in X_coordinates]
     # Z_coordinate = pose.position.z 
     waypoints = WayPoints(X_coordinates, Y_coordinates, Z_coordinates)
     
 
-    target_speed = (10.0 / 3.6) #[m/s]
+    target_speed = (5.0 / 3.6) #[m/s]
     
-    T = 100.0  # max simulation time
+    T = 1000.0  # max simulation time
     
     # initial state
-    state = State(x=1.0, y=1.0, yaw=0.0, currentSpeed=0.0)
+    state = State(x=0.0, y=0.0, yaw=0.0, currentSpeed=0.0)
     
     lastIndex = len(X_coordinates) - 1
     time = 0.0
-    states = States()
     states.update(time, state)
     #
     target_course = WayPoints(X_coordinates, Y_coordinates, Z_coordinates) 
@@ -203,20 +211,19 @@ def main():
     
     rate= rospy.Rate(1/dt)
     
-    while T >= time :#or lastIndex >= target_ind:
+    while not (rospy.is_shutdown == True) :#or lastIndex >= target_ind:
         odom = Odometry()
-        acc = proportional_control(target_speed, state.currentSpeed)  #longitudinal controller
         di, target_ind = pure_pursuit_steer_control(state, target_course, target_ind) #lateral controller
-        state.update(acc, di)   #update the state of the car
+        # state.update(acc, di)   #update the state of the car
         odom.twist.twist.linear.x = target_speed #target
         odom.twist.twist.linear.y = state.currentSpeed 
         odom.twist.twist.linear.z = di  #steering angle
-        target_speed = (20.0/ 3.6)/(abs(di) *4)  # [m/s]
+        #target_speed = (20.0/ 3.6)/(abs(di+0.0001) *4)  # [m/s]
         #waypoints.update(pose)
         if target_speed <= 5/3.6:  # min speed
             target_speed = 5/3.6
-        if target_speed >= 15/3.6:   #max speed
-            target_speed = 15/3.6
+        if target_speed >= 5/3.6:   #max speed
+            target_speed = 5/3.6
         time += dt
         clearance = state.calcDistance(target_course.X_coordinates[-1], target_course.Y_coordinates[-1])
         #print(waypoints.search_target_index(1))
@@ -225,6 +232,7 @@ def main():
          #, target_speed,"time:", round(time,2), "clearance:", round(clearance,2))
         
         states.update(time, state)        
+
         if show_animation:  
             plt.cla()
             # for stopping simulation with the esc key.
@@ -233,7 +241,7 @@ def main():
                 lambda event: [exit(0) if event.key == 'escape' else None])
             
             plt.plot(X_coordinates, Y_coordinates, "-r", label="course")
-            plt.plot(states.x, states.y, "-b", label="trajectory")
+            plt.plot(states.x, states.y,"-b",ms=30,  label="trajectory")
             plt.plot(X_coordinates[target_ind], Y_coordinates[target_ind], "xg", label="target")
             plt.axis("equal")
             plt.grid(True)
@@ -254,10 +262,11 @@ def main():
 
     # assert lastIndex >= target_ind, "Cannot reach goal"
     
-    if show_animation:  
+    if show_animation and not (rospy.is_shutdown == True):  
         plt.cla()
         plt.plot(X_coordinates, Y_coordinates, ".r", label="course")
         plt.plot(states.x, states.y, "-b", label="trajectory")
+        
         plt.legend()
         plt.xlabel("x[m]")
         plt.ylabel("y[m]")
@@ -271,7 +280,9 @@ def main():
         plt.grid(True)
         plt.show()
     
+delta = 0
 
+states = States()
 if __name__ == '__main__':
     main()
     
